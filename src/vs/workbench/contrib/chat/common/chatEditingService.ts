@@ -39,8 +39,6 @@ export interface IChatEditingService {
 	 */
 	createEditingSession(chatSessionId: string): Promise<IChatEditingSession>;
 
-	readonly editingSessionFileLimit: number;
-
 	//#region related files
 
 	hasRelatedFilesProviders(): boolean;
@@ -93,7 +91,7 @@ export interface IChatEditingSession extends IDisposable {
 	getEntry(uri: URI): IModifiedFileEntry | undefined;
 	readEntry(uri: URI, reader?: IReader): IModifiedFileEntry | undefined;
 
-	restoreSnapshot(requestId: string): Promise<void>;
+	restoreSnapshot(requestId: string, stopId: string | undefined): Promise<void>;
 	getSnapshotUri(requestId: string, uri: URI): URI | undefined;
 
 	/**
@@ -132,8 +130,9 @@ export interface IModifiedFileEntry {
 	readonly originalURI: URI;
 	readonly originalModel: ITextModel;
 	readonly modifiedURI: URI;
+
 	readonly state: IObservable<WorkingSetEntryState>;
-	readonly isCurrentlyBeingModified: IObservable<boolean>;
+	readonly isCurrentlyBeingModifiedBy: IObservable<IChatResponseModel | undefined>;
 	readonly rewriteRatio: IObservable<number>;
 	readonly maxLineNumber: IObservable<number>;
 	readonly diffInfo: IObservable<IDocumentDiff>;

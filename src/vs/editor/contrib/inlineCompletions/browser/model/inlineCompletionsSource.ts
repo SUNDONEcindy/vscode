@@ -3,6 +3,8 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { compareUndefinedSmallest, numberComparator } from '../../../../../base/common/arrays.js';
+import { findLastMax } from '../../../../../base/common/arraysFind.js';
 import { CancellationToken, CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { equalsIfDefined, itemEquals } from '../../../../../base/common/equals.js';
 import { BugIndicatingError } from '../../../../../base/common/errors.js';
@@ -78,7 +80,7 @@ export class InlineCompletionsSource extends Disposable {
 
 	public readonly loading = observableValue(this, false);
 
-	public fetch(position: Position, context: InlineCompletionContext, activeInlineCompletion: InlineCompletionWithUpdatedRange | undefined): Promise<boolean> {
+	public fetch(position: Position, context: InlineCompletionContext, activeInlineCompletion: InlineCompletionWithUpdatedRange | undefined, withDebounce: boolean): Promise<boolean> {
 		const request = new UpdateRequest(position, context, this._textModel.getVersionId());
 
 		const target = context.selectedSuggestionInfo ? this.suggestWidgetInlineCompletions : this.inlineCompletions;
@@ -97,10 +99,17 @@ export class InlineCompletionsSource extends Disposable {
 		const source = new CancellationTokenSource();
 
 		const promise = (async () => {
-			const shouldDebounce = updateOngoing || context.triggerKind === InlineCompletionTriggerKind.Automatic;
+			const recommendedDebounceValue = this._debounceValue.get(this._textModel);
+			const debounceValue = findLastMax(
+				this._languageFeaturesService.inlineCompletionsProvider.all(this._textModel).map(p => p.debounceDelayMs),
+				compareUndefinedSmallest(numberComparator)
+			) ?? recommendedDebounceValue;
+
+			// Debounce in any case if update is ongoing
+			const shouldDebounce = updateOngoing || (withDebounce && context.triggerKind === InlineCompletionTriggerKind.Automatic);
 			if (shouldDebounce) {
 				// This debounces the operation
-				await wait(this._debounceValue.get(this._textModel), source.token);
+				await wait(debounceValue, source.token);
 			}
 
 			if (source.token.isCancellationRequested || this._store.isDisposed || this._textModel.getVersionId() !== request.versionId) {
@@ -264,7 +273,7 @@ export class UpToDateInlineCompletions implements IDisposable {
 		private readonly _versionId: IObservableWithChange<number | null, IModelContentChangedEvent | undefined>,
 	) {
 		this._inlineCompletions = inlineCompletionProviderResult.completions.map(
-			completion => new InlineCompletionWithUpdatedRange(completion, this._textModel, this._versionId, this.request)
+			completion => new InlineCompletionWithUpdatedRange(completion, undefined, this._textModel, this._versionId, this.request)
 		);
 	}
 
@@ -289,7 +298,7 @@ export class UpToDateInlineCompletions implements IDisposable {
 			inlineCompletion.source.addRef();
 		}
 
-		this._inlineCompletions.unshift(new InlineCompletionWithUpdatedRange(inlineCompletion, this._textModel, this._versionId, this.request));
+		this._inlineCompletions.unshift(new InlineCompletionWithUpdatedRange(inlineCompletion, range, this._textModel, this._versionId, this.request));
 		this._prependedInlineCompletionItems.push(inlineCompletion);
 	}
 }
@@ -327,13 +336,14 @@ export class InlineCompletionWithUpdatedRange extends Disposable {
 
 	constructor(
 		public readonly inlineCompletion: InlineCompletionItem,
+		updatedRange: Range | undefined,
 		private readonly _textModel: ITextModel,
 		private readonly _modelVersion: IObservableWithChange<number | null, IModelContentChangedEvent | undefined>,
 		public readonly request: UpdateRequest,
 	) {
 		super();
 
-		this._updatedEdit = this._register(this._toUpdatedEdit(this.inlineCompletion.range, this.inlineCompletion.insertText));
+		this._updatedEdit = this._register(this._toUpdatedEdit(updatedRange ?? this.inlineCompletion.range, this.inlineCompletion.insertText));
 	}
 
 	private _toInlineCompletionEdit(editRange: Range, replaceText: string): UpdatedEdit {
@@ -346,14 +356,14 @@ export class InlineCompletionWithUpdatedRange extends Disposable {
 		return new UpdatedEdit(offsetEdit, this._textModel, this._modelVersion, false);
 	}
 
-	private _toUpdatedEdit(editRange: Range, _replaceText: string): UpdatedEdit {
+	private _toUpdatedEdit(editRange: Range, replaceText: string): UpdatedEdit {
 		if (!this.isInlineEdit) {
-			return this._toInlineCompletionEdit(this.inlineCompletion.range, this.inlineCompletion.insertText);
+			return this._toInlineCompletionEdit(editRange, replaceText);
 		}
 
 		const eol = this._textModel.getEOL();
 		const editOriginalText = this._textModel.getValueInRange(editRange);
-		const editReplaceText = _replaceText.replace(/\r\n|\r|\n/g, eol);
+		const editReplaceText = replaceText.replace(/\r\n|\r|\n/g, eol);
 
 		const diffAlgorithm = linesDiffComputers.getDefault();
 		const lineDiffs = diffAlgorithm.computeDiff(
