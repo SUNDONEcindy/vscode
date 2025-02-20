@@ -4,11 +4,15 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { coalesce } from '../../../../../base/common/arrays.js';
+import { CancellationToken } from '../../../../../base/common/cancellation.js';
+import { Codicon } from '../../../../../base/common/codicons.js';
 import { isCancellationError } from '../../../../../base/common/errors.js';
+import * as glob from '../../../../../base/common/glob.js';
 import { IMarkdownString, MarkdownString } from '../../../../../base/common/htmlContent.js';
 import { Disposable, DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ResourceSet } from '../../../../../base/common/map.js';
-import { basename, joinPath, relativePath } from '../../../../../base/common/resources.js';
+import { basename, dirname, joinPath, relativePath } from '../../../../../base/common/resources.js';
+import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { IRange, Range } from '../../../../../editor/common/core/range.js';
 import { IDecorationOptions } from '../../../../../editor/common/editorCommon.js';
@@ -22,20 +26,19 @@ import { FileType, IFileService } from '../../../../../platform/files/common/fil
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ILabelService } from '../../../../../platform/label/common/label.js';
 import { ILogService } from '../../../../../platform/log/common/log.js';
+import { IMarkerService, MarkerSeverity } from '../../../../../platform/markers/common/markers.js';
+import { PromptsConfig } from '../../../../../platform/prompts/common/config.js';
 import { IQuickAccessOptions } from '../../../../../platform/quickinput/common/quickAccess.js';
-import { IQuickInputService, IQuickPickItem } from '../../../../../platform/quickinput/common/quickInput.js';
+import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from '../../../../../platform/quickinput/common/quickInput.js';
+import { IUriIdentityService } from '../../../../../platform/uriIdentity/common/uriIdentity.js';
 import { IWorkspaceContextService } from '../../../../../platform/workspace/common/workspace.js';
-import { getExcludes, ISearchConfiguration, IFileQuery, QueryType, ISearchComplete, ISearchService } from '../../../../services/search/common/search.js';
+import { getExcludes, IFileQuery, ISearchComplete, ISearchConfiguration, ISearchService, QueryType } from '../../../../services/search/common/search.js';
 import { ISymbolQuickPickItem } from '../../../search/browser/symbolsQuickAccess.js';
+import { IDiagnosticVariableEntryFilterData } from '../../common/chatModel.js';
 import { IChatRequestVariableValue, IDynamicVariable } from '../../common/chatVariables.js';
-import { PromptFilesConfig } from '../../common/promptSyntax/config.js';
-import * as glob from '../../../../../base/common/glob.js';
 import { IChatWidget } from '../chat.js';
 import { ChatWidget, IChatWidgetContrib } from '../chatWidget.js';
 import { ChatFileReference } from './chatDynamicVariables/chatFileReference.js';
-import { CancellationToken } from '../../../../../base/common/cancellation.js';
-import { ThemeIcon } from '../../../../../base/common/themables.js';
-import { Codicon } from '../../../../../base/common/codicons.js';
 
 export const dynamicVariableDecorationType = 'chat-dynamic-variable';
 
@@ -139,7 +142,7 @@ export class ChatDynamicVariableModel extends Disposable implements IChatWidgetC
 
 	addReference(ref: IDynamicVariable): void {
 		// use `ChatFileReference` for file references and `IDynamicVariable` for other variables
-		const promptSnippetsEnabled = PromptFilesConfig.enabled(this.configService);
+		const promptSnippetsEnabled = PromptsConfig.enabled(this.configService);
 		const variable = (ref.id === 'vscode.file' && promptSnippetsEnabled)
 			? this.instantiationService.createInstance(ChatFileReference, ref)
 			: ref;
@@ -299,13 +302,13 @@ export class SelectAndInsertFileAction extends Action2 {
 }
 registerAction2(SelectAndInsertFileAction);
 
-export class SelectAndInsertDirectoryAction extends Action2 {
-	static readonly Name = 'directory';
-	static readonly ID = 'workbench.action.chat.selectAndInsertDirectory';
+export class SelectAndInsertFolderAction extends Action2 {
+	static readonly Name = 'folder';
+	static readonly ID = 'workbench.action.chat.selectAndInsertFolder';
 
 	constructor() {
 		super({
-			id: SelectAndInsertDirectoryAction.ID,
+			id: SelectAndInsertFolderAction.ID,
 			title: '' // not displayed
 		});
 	}
@@ -319,13 +322,13 @@ export class SelectAndInsertDirectoryAction extends Action2 {
 		}
 
 		const doCleanup = () => {
-			// Failed, remove the dangling `directory`
-			context.widget.inputEditor.executeEdits('chatInsertDirectory', [{ range: context.range, text: `` }]);
+			// Failed, remove the dangling `folder`
+			context.widget.inputEditor.executeEdits('chatInsertFolder', [{ range: context.range, text: `` }]);
 		};
 
-		const directory = await createDirectoryQuickPick(accessor);
-		if (!directory) {
-			logService.trace('SelectAndInsertDirectoryAction: no directory selected');
+		const folder = await createFolderQuickPick(accessor);
+		if (!folder) {
+			logService.trace('SelectAndInsertFolderAction: no folder selected');
 			doCleanup();
 			return;
 		}
@@ -333,40 +336,41 @@ export class SelectAndInsertDirectoryAction extends Action2 {
 		const editor = context.widget.inputEditor;
 		const range = context.range;
 
-		const folderName = basename(directory);
-		const text = `#directory:${folderName}`;
-		const success = editor.executeEdits('chatInsertDirectory', [{ range, text: text + ' ' }]);
+		const folderName = basename(folder);
+		const text = `#folder:${folderName}`;
+		const success = editor.executeEdits('chatInsertFolder', [{ range, text: text + ' ' }]);
 		if (!success) {
-			logService.trace(`SelectAndInsertDirectoryAction: failed to insert "${text}"`);
+			logService.trace(`SelectAndInsertFolderAction: failed to insert "${text}"`);
 			doCleanup();
 			return;
 		}
 
 		context.widget.getContrib<ChatDynamicVariableModel>(ChatDynamicVariableModel.ID)?.addReference({
-			id: 'vscode.directory',
+			id: 'vscode.folder',
 			isFile: false,
-			prefix: 'directory',
+			prefix: 'folder',
 			range: { startLineNumber: range.startLineNumber, startColumn: range.startColumn, endLineNumber: range.endLineNumber, endColumn: range.startColumn + text.length },
-			data: directory
+			data: folder
 		});
 	}
 
 }
-registerAction2(SelectAndInsertDirectoryAction);
+registerAction2(SelectAndInsertFolderAction);
 
-export async function createDirectoryQuickPick(accessor: ServicesAccessor): Promise<URI | undefined> {
+export async function createFolderQuickPick(accessor: ServicesAccessor): Promise<URI | undefined> {
 	const quickInputService = accessor.get(IQuickInputService);
 	const searchService = accessor.get(ISearchService);
 	const configurationService = accessor.get(IConfigurationService);
 	const workspaceService = accessor.get(IWorkspaceContextService);
 	const fileService = accessor.get(IFileService);
+	const labelService = accessor.get(ILabelService);
 
 	const workspaces = workspaceService.getWorkspace().folders.map(folder => folder.uri);
-	const topLevelDirectoryItems = (await getTopLevelDirectories(workspaces, fileService)).map(createQuickPickItem);
+	const topLevelFolderItems = (await getTopLevelFolders(workspaces, fileService)).map(createQuickPickItem);
 
 	const quickPick = quickInputService.createQuickPick();
-	quickPick.placeholder = 'Search directory by name';
-	quickPick.items = topLevelDirectoryItems;
+	quickPick.placeholder = 'Search folder by name';
+	quickPick.items = topLevelFolderItems;
 
 	return await new Promise<URI | undefined>(_resolve => {
 
@@ -379,13 +383,13 @@ export async function createDirectoryQuickPick(accessor: ServicesAccessor): Prom
 
 		disposables.add(quickPick.onDidChangeValue(async value => {
 			if (value === '') {
-				quickPick.items = topLevelDirectoryItems;
+				quickPick.items = topLevelFolderItems;
 				return;
 			}
 
-			const workspaceDirectories = await Promise.all(
+			const workspaceFolders = await Promise.all(
 				workspaces.map(workspace =>
-					searchDirectories(
+					searchFolders(
 						workspace,
 						value,
 						undefined,
@@ -395,7 +399,7 @@ export async function createDirectoryQuickPick(accessor: ServicesAccessor): Prom
 					)
 				));
 
-			quickPick.items = workspaceDirectories.flat().map(createQuickPickItem);
+			quickPick.items = workspaceFolders.flat().map(createQuickPickItem);
 		}));
 
 		disposables.add(quickPick.onDidAccept((e) => {
@@ -410,19 +414,19 @@ export async function createDirectoryQuickPick(accessor: ServicesAccessor): Prom
 		quickPick.show();
 	});
 
-	function createQuickPickItem(directory: URI): IQuickPickItem & { resource: URI } {
+	function createQuickPickItem(folder: URI): IQuickPickItem & { resource: URI } {
 		return {
 			type: 'item',
-			id: directory.toString(),
-			resource: directory,
-			label: basename(directory),
-			description: directory.path,
+			id: folder.toString(),
+			resource: folder,
+			label: basename(folder),
+			description: labelService.getUriLabel(dirname(folder), { relative: true }),
 			iconClass: ThemeIcon.asClassName(Codicon.folder),
 		};
 	}
 }
 
-export async function getTopLevelDirectories(workspaces: URI[], fileService: IFileService): Promise<URI[]> {
+export async function getTopLevelFolders(workspaces: URI[], fileService: IFileService): Promise<URI[]> {
 	const folders: URI[] = [];
 	for (const workspace of workspaces) {
 		const fileSystemProvider = fileService.getProvider(workspace.scheme);
@@ -442,7 +446,7 @@ export async function getTopLevelDirectories(workspaces: URI[], fileService: IFi
 	return folders;
 }
 
-export async function searchDirectories(
+export async function searchFolders(
 	workspace: URI,
 	pattern: string,
 	token: CancellationToken | undefined,
@@ -475,14 +479,14 @@ export async function searchDirectories(
 		return [];
 	}
 
-	const directoryResources = getMatchingDirectoriesFromFiles(folderResults.results.map(result => result.resource), workspace, pattern);
-	return directoryResources;
+	const folderResources = getMatchingFoldersFromFiles(folderResults.results.map(result => result.resource), workspace, pattern);
+	return folderResources;
 }
 
 
 // TODO: remove this and have support from the search service
-function getMatchingDirectoriesFromFiles(resources: URI[], workspace: URI, pattern: string): URI[] {
-	const uniqueDirectories = new ResourceSet();
+function getMatchingFoldersFromFiles(resources: URI[], workspace: URI, pattern: string): URI[] {
+	const uniqueFolders = new ResourceSet();
 	for (const resource of resources) {
 		const relativePathToRoot = relativePath(workspace, resource);
 		if (!relativePathToRoot) {
@@ -493,22 +497,22 @@ function getMatchingDirectoriesFromFiles(resources: URI[], workspace: URI, patte
 		const stats = relativePathToRoot.split('/').slice(0, -1);
 		for (const stat of stats) {
 			dirResource = dirResource.with({ path: `${dirResource.path}/${stat}` });
-			uniqueDirectories.add(dirResource);
+			uniqueFolders.add(dirResource);
 		}
 	}
 
-	const matchingDirectories: URI[] = [];
-	for (const dirResource of uniqueDirectories) {
-		const stats = dirResource.path.split('/');
+	const matchingFolders: URI[] = [];
+	for (const folderResource of uniqueFolders) {
+		const stats = folderResource.path.split('/');
 		const dirStat = stats[stats.length - 1];
 		if (!dirStat || !glob.match(`*${pattern}*`, dirStat)) {
 			continue;
 		}
 
-		matchingDirectories.push(dirResource);
+		matchingFolders.push(folderResource);
 	}
 
-	return matchingDirectories;
+	return matchingFolders;
 }
 
 export class SelectAndInsertSymAction extends Action2 {
@@ -644,3 +648,57 @@ export class AddDynamicVariableAction extends Action2 {
 	}
 }
 registerAction2(AddDynamicVariableAction);
+
+export async function createMarkersQuickPick(accessor: ServicesAccessor): Promise<IDiagnosticVariableEntryFilterData | undefined> {
+	const markers = accessor.get(IMarkerService).read();
+	if (!markers.length) {
+		return;
+	}
+
+	const uriIdentityService = accessor.get(IUriIdentityService);
+	const labelService = accessor.get(ILabelService);
+	markers.sort((a, b) => uriIdentityService.extUri.compare(a.resource, b.resource) || b.severity - a.severity);
+
+	const severities = new Set<MarkerSeverity>();
+	type MarkerPickItem = IQuickPickItem & { resource?: URI; entry: IDiagnosticVariableEntryFilterData };
+	const items: (MarkerPickItem | IQuickPickSeparator)[] = [];
+	for (const marker of markers) {
+		if (!uriIdentityService.extUri.isEqual(marker.resource, (items.at(-1) as MarkerPickItem)?.resource)) {
+			items.push({ type: 'separator', label: labelService.getUriLabel(marker.resource, { relative: true }) });
+		}
+
+		severities.add(marker.severity);
+		items.push({
+			type: 'item',
+			resource: marker.resource,
+			label: marker.message,
+			description: localize('markers.panel.at.ln.col.number', "[Ln {0}, Col {1}]", '' + marker.startLineNumber, '' + marker.startColumn),
+			entry: { filterUri: marker.resource, filterRange: { startLineNumber: marker.startLineNumber, endLineNumber: marker.endLineNumber, startColumn: marker.startColumn, endColumn: marker.endColumn } }
+		});
+	}
+
+	if (items.length === 2) { // single error in a URI
+		return (items[1] as MarkerPickItem).entry;
+	}
+
+	if (items.length > 2) {
+		if (severities.has(MarkerSeverity.Error)) {
+			items.unshift({ type: 'item', label: localize('markers.panel.allErrors', 'All Errors'), entry: { filterSeverity: MarkerSeverity.Error } });
+		}
+		if (severities.has(MarkerSeverity.Warning)) {
+			items.unshift({ type: 'item', label: localize('markers.panel.allWarnings', 'All Warnings'), entry: { filterSeverity: MarkerSeverity.Warning } });
+		}
+		if (severities.has(MarkerSeverity.Info)) {
+			items.unshift({ type: 'item', label: localize('markers.panel.allInfos', 'All Infos'), entry: { filterSeverity: MarkerSeverity.Info } });
+		}
+	}
+
+
+	const quickInputService = accessor.get(IQuickInputService);
+	const quickPick = quickInputService.createQuickPick({ useSeparators: true });
+	quickPick.placeholder = localize('pickAProblem', 'Pick a problem to attach...');
+	quickPick.items = items;
+
+	return quickInputService.pick(items, { canPickMany: false }).then(v => v?.entry);
+}
+
